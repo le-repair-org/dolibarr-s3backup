@@ -255,9 +255,10 @@ class S3Backup
   private function uploadToS3(S3Client $s3, $localFile, $key)
   {
     $s3->putObject(array(
-      'Bucket'     => $this->getBucket(),
-      'Key'        => $key,
-      'SourceFile' => $localFile,
+      'Bucket'       => $this->getBucket(),
+      'Key'          => $key,
+      'SourceFile'   => $localFile,
+      'StorageClass' => 'STANDARD_IA',
     ));
   }
 
