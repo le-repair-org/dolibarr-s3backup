@@ -23,6 +23,10 @@ use Aws\Exception\AwsException;
 
 /**
  * Handles scheduled database and file backups uploaded to an S3-compatible bucket.
+ *
+ * S3 layout:
+ *   [{prefix}/]YYYYMMDD_HH_MM_SS/db.bz2
+ *   [{prefix}/]YYYYMMDD_HH_MM_SS/docs.tar.gz
  */
 class S3Backup
 {
@@ -43,31 +47,35 @@ class S3Backup
     $this->db = $db;
   }
 
+  // ------------------------------------------------------------------
+  // Public cron-callable methods
+  // ------------------------------------------------------------------
+
   /**
-   * Dump the database and upload the archive to S3.
-   * Called by the Dolibarr cron scheduler.
+   * Dump the database and archive the documents directory, then upload both
+   * under the same timestamp folder: YYYYMMDD_HH_MM_SS/db.bz2 and docs.tar.gz.
    *
    * @return int 0 on success, non-zero on error
    */
-  public function backupDatabase()
+  public function backup()
   {
-    global $conf, $langs;
-
     dol_syslog(__METHOD__, LOG_DEBUG);
 
-    $error = 0;
-    $localFile = null;
+    $error    = 0;
+    $dbFile   = null;
+    $docsFile = null;
 
     try {
-      $s3 = $this->buildS3Client();
+      $s3        = $this->buildS3Client();
+      $timestamp = date('Ymd_H_i_s');
 
-      $localFile = $this->dumpDatabaseToFile();
+      $dbFile   = $this->dumpDatabaseToFile($timestamp);
+      $docsFile = $this->archiveFilesToFile($timestamp);
 
-      $key = $this->buildKey('db', basename($localFile));
-      $this->uploadToS3($s3, $localFile, $key);
+      $this->uploadToS3($s3, $dbFile,   $this->buildKey($timestamp, 'db.bz2'));
+      $this->uploadToS3($s3, $docsFile, $this->buildKey($timestamp, 'docs.tar.gz'));
 
-      $deleted = $this->pruneOldBackups($s3, 'db');
-      $this->output = 'Database backup uploaded: '.$key.' | Pruned: '.$deleted.' old backup(s)';
+      $this->output = 'Backup uploaded: '.$timestamp.'/db.bz2 + docs.tar.gz';
     } catch (AwsException $e) {
       $error++;
       $this->error = 'S3 upload failed: '.$e->getAwsErrorMessage();
@@ -77,8 +85,11 @@ class S3Backup
       $this->error = $e->getMessage();
       dol_syslog(__METHOD__.' - '.$this->error, LOG_ERR);
     } finally {
-      if ($localFile && file_exists($localFile)) {
-        dol_delete_file($localFile);
+      if ($dbFile && file_exists($dbFile)) {
+        dol_delete_file($dbFile);
+      }
+      if ($docsFile && file_exists($docsFile)) {
+        dol_delete_file($docsFile);
       }
     }
 
@@ -86,55 +97,32 @@ class S3Backup
   }
 
   /**
-   * Archive the documents directory and upload the zip to S3.
-   * Called by the Dolibarr cron scheduler.
+   * Apply the two-tier retention policy to all backup folders in the S3 bucket.
+   *
+   * - Folders within RETENTION_DAYS: kept as-is.
+   * - Older folders: only the most recent folder per calendar month is kept.
    *
    * @return int 0 on success, non-zero on error
    */
-  public function backupFiles()
+  public function pruneBackups()
   {
-    global $conf, $langs;
-
     dol_syslog(__METHOD__, LOG_DEBUG);
 
-    $error = 0;
-    $localFile = null;
-
     try {
-      $s3 = $this->buildS3Client();
-
-      $timestamp = dol_print_date(dol_now(), '%Y-%m-%d_%H-%M-%S', 'gmt');
-      $filename = $timestamp.'_files.zip';
-      $localFile = DOL_DATA_ROOT.'/admin/backup/'.$filename;
-
-      dol_mkdir(DOL_DATA_ROOT.'/admin/backup');
-
-      $result = dol_compress_dir(DOL_DATA_ROOT, $localFile, 'zip', 'admin/backup');
-      if ($result <= 0) {
-        $this->error = 'dol_compress_dir failed with code: '.$result;
-        return 1;
-      }
-
-      $key = $this->buildKey('files', $filename);
-      $this->uploadToS3($s3, $localFile, $key);
-
-      $deleted = $this->pruneOldBackups($s3, 'files');
-      $this->output = 'Files backup uploaded: '.$key.' | Pruned: '.$deleted.' old backup(s)';
+      $s3      = $this->buildS3Client();
+      $deleted = $this->pruneOldBackupFolders($s3);
+      $this->output = 'Pruned: '.$deleted.' old backup folder(s)';
     } catch (AwsException $e) {
-      $error++;
-      $this->error = 'S3 upload failed: '.$e->getAwsErrorMessage();
+      $this->error = 'S3 prune failed: '.$e->getAwsErrorMessage();
       dol_syslog(__METHOD__.' - '.$this->error, LOG_ERR);
+      return 1;
     } catch (Exception $e) {
-      $error++;
       $this->error = $e->getMessage();
       dol_syslog(__METHOD__.' - '.$this->error, LOG_ERR);
-    } finally {
-      if ($localFile && file_exists($localFile)) {
-        dol_delete_file($localFile);
-      }
+      return 1;
     }
 
-    return $error;
+    return 0;
   }
 
   /**
@@ -151,69 +139,21 @@ class S3Backup
   }
 
   // ------------------------------------------------------------------
-  // Private helpers
+  // Private — dump and archive helpers
   // ------------------------------------------------------------------
 
   /**
-   * Build and return an S3Client configured from Dolibarr constants.
-   */
-  private function buildS3Client()
-  {
-    global $conf;
-
-    return new S3Client(array(
-      'version'                 => 'latest',
-      'region'                  => getDolGlobalString('S3BACKUP_REGION'),
-      'endpoint'                => getDolGlobalString('S3BACKUP_ENDPOINT'),
-      'use_path_style_endpoint' => true,
-      'credentials'             => array(
-        'key'    => getDolGlobalString('S3BACKUP_ACCESS_KEY'),
-        'secret' => getDolGlobalString('S3BACKUP_SECRET_KEY'),
-      ),
-    ));
-  }
-
-  /**
-   * Upload a local file to S3 using streaming to handle large archives.
-   */
-  private function uploadToS3(S3Client $s3, $localFile, $key)
-  {
-    $s3->putObject(array(
-      'Bucket'     => $this->getBucket(),
-      'Key'        => $key,
-      'SourceFile' => $localFile,
-    ));
-  }
-
-  /**
-   * Build the S3 object key from the configured prefix, a type sub-folder, and a filename.
-   */
-  private function buildKey($type, $filename)
-  {
-    $prefix = rtrim(getDolGlobalString('S3BACKUP_PREFIX', 'dolibarr-backup'), '/');
-    return $prefix.'/'.$type.'/'.$filename;
-  }
-
-  /**
-   * Return the configured S3 bucket name.
-   */
-  private function getBucket()
-  {
-    return getDolGlobalString('S3BACKUP_BUCKET');
-  }
-
-  /**
-   * Run mysqldump and compress the output to a .sql.gz file in DOL_DATA_ROOT/admin/backup/.
+   * Run mysqldump, compress with bzip2, and write to a temp file.
    *
-   * Uses --set-gtid-purged=OFF and redirects stderr to /dev/null so that non-fatal
-   * warnings (e.g. GTID notices) do not corrupt the dump file or trigger false errors.
+   * Uses --set-gtid-purged=OFF and redirects stderr to /dev/null so that
+   * non-fatal warnings do not corrupt the dump or trigger false errors.
    *
-   * @return string Absolute path to the generated .sql.gz file
+   * @return string Absolute path to the generated .bz2 file
    * @throws Exception on configuration or execution failure
    */
-  private function dumpDatabaseToFile()
+  private function dumpDatabaseToFile($timestamp)
   {
-    global $db, $conf;
+    global $db;
     global $dolibarr_main_db_name, $dolibarr_main_db_host, $dolibarr_main_db_user,
            $dolibarr_main_db_port, $dolibarr_main_db_pass, $dolibarr_main_db_character_set;
 
@@ -223,10 +163,8 @@ class S3Backup
     }
     $cmddump = preg_replace('/[\$%]/', '', $cmddump);
 
-    $timestamp = dol_print_date(dol_now(), '%Y-%m-%d_%H-%M-%S', 'gmt');
-    $filename  = 'mysqldump_'.$dolibarr_main_db_name.'_'.$timestamp.'.sql.gz';
-    $outputDir = DOL_DATA_ROOT.'/admin/backup';
-    $outputFile = $outputDir.'/'.$filename;
+    $outputDir  = DOL_DATA_ROOT.'/admin/backup';
+    $outputFile = $outputDir.'/'.$timestamp.'_db.bz2';
 
     dol_mkdir($outputDir);
 
@@ -251,8 +189,7 @@ class S3Backup
     }
     $args .= ' '.escapeshellarg((string) $dolibarr_main_db_name);
 
-    // Redirect stderr to /dev/null so non-fatal warnings do not pollute the dump
-    $cmd = escapeshellarg($cmddump).' '.$args.' 2>/dev/null | gzip > '.escapeshellarg($outputFile);
+    $cmd = escapeshellarg($cmddump).' '.$args.' 2>/dev/null | bzip2 > '.escapeshellarg($outputFile);
 
     exec($cmd, $cmdOutput, $retval);
 
@@ -264,77 +201,157 @@ class S3Backup
   }
 
   /**
-   * Prune S3 objects for a given backup type using a two-tier retention policy:
-   * - Objects within the retention window (RETENTION_DAYS): kept as-is
-   * - Older objects: only the most recent backup per calendar month is kept
+   * Archive DOL_DATA_ROOT with tar+gzip and write to a temp file.
    *
-   * @return int Number of deleted objects
+   * @return string Absolute path to the generated .tar.gz file
+   * @throws Exception on execution failure
    */
-  private function pruneOldBackups(S3Client $s3, $type)
+  private function archiveFilesToFile($timestamp)
   {
-    $prefix      = rtrim(getDolGlobalString('S3BACKUP_PREFIX', 'dolibarr-backup'), '/') . '/' . $type . '/';
-    $retDays     = max(1, (int) getDolGlobalString('S3BACKUP_RETENTION_DAYS', 30));
-    $dailyCutoff = dol_now() - $retDays * 86400;
+    $outputDir  = DOL_DATA_ROOT.'/admin/backup';
+    $outputFile = $outputDir.'/'.$timestamp.'_docs.tar.gz';
 
-    $objects = array();
-    $paginator = $s3->getPaginator('ListObjectsV2', array(
-      'Bucket' => $this->getBucket(),
-      'Prefix' => $prefix,
+    dol_mkdir($outputDir);
+
+    // Exclude the backup directory itself to avoid recursive inclusion
+    $excludeRel = 'admin/backup';
+    $cmd = 'tar -czf '.escapeshellarg($outputFile)
+      .' --exclude='.escapeshellarg($excludeRel)
+      .' -C '.escapeshellarg(DOL_DATA_ROOT).' . 2>/dev/null';
+
+    exec($cmd, $cmdOutput, $retval);
+
+    if ($retval !== 0 || !file_exists($outputFile) || filesize($outputFile) === 0) {
+      throw new Exception('tar failed with exit code '.$retval);
+    }
+
+    return $outputFile;
+  }
+
+  // ------------------------------------------------------------------
+  // Private — S3 helpers
+  // ------------------------------------------------------------------
+
+  /**
+   * Build and return an S3Client configured from Dolibarr constants.
+   */
+  private function buildS3Client()
+  {
+    return new S3Client(array(
+      'version'                 => 'latest',
+      'region'                  => getDolGlobalString('S3BACKUP_REGION'),
+      'endpoint'                => getDolGlobalString('S3BACKUP_ENDPOINT'),
+      'use_path_style_endpoint' => true,
+      'credentials'             => array(
+        'key'    => getDolGlobalString('S3BACKUP_ACCESS_KEY'),
+        'secret' => getDolGlobalString('S3BACKUP_SECRET_KEY'),
+      ),
     ));
-    foreach ($paginator as $page) {
-      foreach (($page['Contents'] ?? array()) as $obj) {
-        $fileDate = strtotime(substr(basename($obj['Key']), 0, 10));
-        if ($fileDate === false) {
-          continue;
-        }
-        $objects[] = array('Key' => $obj['Key'], 'date' => $fileDate);
-      }
-    }
-
-    // Split into recent (keep all) and old (apply monthly retention)
-    $old = array_filter($objects, function ($o) use ($dailyCutoff) {
-      return $o['date'] < $dailyCutoff;
-    });
-
-    // For old objects keep the most recent backup of each calendar month
-    $byMonth = array();
-    foreach ($old as $o) {
-      $month = date('Y-m', $o['date']);
-      if (!isset($byMonth[$month]) || $o['date'] > $byMonth[$month]['date']) {
-        $byMonth[$month] = $o;
-      }
-    }
-    $keepKeys = array_column($byMonth, 'Key');
-
-    $toDelete = array();
-    foreach ($old as $o) {
-      if (!in_array($o['Key'], $keepKeys, true)) {
-        $toDelete[] = array('Key' => $o['Key']);
-      }
-    }
-
-    foreach (array_chunk($toDelete, 1000) as $batch) {
-      $s3->deleteObjects(array(
-        'Bucket' => $this->getBucket(),
-        'Delete' => array('Objects' => $batch),
-      ));
-    }
-
-    return count($toDelete);
   }
 
   /**
-   * Return the full path of the most recently modified file matching a suffix in a sub-directory of DOL_DATA_ROOT.
+   * Upload a local file to S3.
    */
-  private function findLatestBackupFile($relDir, $suffix)
+  private function uploadToS3(S3Client $s3, $localFile, $key)
   {
-    $dir = DOL_DATA_ROOT.'/'.$relDir;
-    $files = dol_dir_list($dir, 'files', 0, '', '', 'date', SORT_DESC);
-    foreach ($files as $file) {
-      if (substr($file['name'], -strlen($suffix)) === $suffix) {
-        return $file['fullname'];
+    $s3->putObject(array(
+      'Bucket'     => $this->getBucket(),
+      'Key'        => $key,
+      'SourceFile' => $localFile,
+    ));
+  }
+
+  /**
+   * Build an S3 object key: TIMESTAMP/filename
+   */
+  private function buildKey($timestamp, $filename)
+  {
+    return $timestamp.'/'.$filename;
+  }
+
+  /**
+   * Return the configured S3 bucket name.
+   */
+  private function getBucket()
+  {
+    return getDolGlobalString('S3BACKUP_BUCKET');
+  }
+
+  /**
+   * List all timestamp folders in the bucket (under the configured prefix),
+   * apply two-tier retention, and delete expired folders.
+   *
+   * @return int Number of deleted folders
+   */
+  private function pruneOldBackupFolders(S3Client $s3)
+  {
+    $bucket      = $this->getBucket();
+    $retDays     = max(1, (int) getDolGlobalString('S3BACKUP_RETENTION_DAYS', 30));
+    $dailyCutoff = time() - $retDays * 86400;
+
+    // Collect all top-level timestamp folders
+    $folders = array();
+    $paginator = $s3->getPaginator('ListObjectsV2', array(
+      'Bucket'    => $bucket,
+      'Delimiter' => '/',
+    ));
+    foreach ($paginator as $page) {
+      foreach (($page['CommonPrefixes'] ?? array()) as $cp) {
+        // e.g. "dolibarr-backup/20251130_16_46_45/" or "20251130_16_46_45/"
+        $folderKey  = $cp['Prefix'];
+        $folderName = basename(rtrim($folderKey, '/'));
+        // Parse YYYYMMDD from the start of the folder name
+        $fileDate = DateTime::createFromFormat('Ymd', substr($folderName, 0, 8));
+        if (!$fileDate) {
+          continue;
+        }
+        $folders[] = array('key' => $folderKey, 'name' => $folderName, 'date' => $fileDate->getTimestamp());
       }
     }
-    return null;
+
+    // Split recent (keep all) vs old (apply monthly retention)
+    $old = array_filter($folders, function ($f) use ($dailyCutoff) {
+      return $f['date'] < $dailyCutoff;
+    });
+
+    // Keep the most recent folder per calendar month
+    $byMonth = array();
+    foreach ($old as $f) {
+      $month = date('Y-m', $f['date']);
+      if (!isset($byMonth[$month]) || $f['date'] > $byMonth[$month]['date']) {
+        $byMonth[$month] = $f;
+      }
+    }
+    $keepKeys = array_column($byMonth, 'key');
+
+    $deletedFolders = 0;
+    foreach ($old as $f) {
+      if (in_array($f['key'], $keepKeys, true)) {
+        continue;
+      }
+
+      // List all objects inside this folder and delete them
+      $objects = array();
+      $objPaginator = $s3->getPaginator('ListObjectsV2', array(
+        'Bucket' => $bucket,
+        'Prefix' => $f['key'],
+      ));
+      foreach ($objPaginator as $objPage) {
+        foreach (($objPage['Contents'] ?? array()) as $obj) {
+          $objects[] = array('Key' => $obj['Key']);
+        }
+      }
+
+      foreach (array_chunk($objects, 1000) as $batch) {
+        $s3->deleteObjects(array(
+          'Bucket' => $bucket,
+          'Delete' => array('Objects' => $batch),
+        ));
+      }
+
+      $deletedFolders++;
+    }
+
+    return $deletedFolders;
   }
 }

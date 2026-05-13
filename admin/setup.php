@@ -67,7 +67,6 @@ if ($action === 'save') {
     'S3BACKUP_REGION',
     'S3BACKUP_BUCKET',
     'S3BACKUP_ACCESS_KEY',
-    'S3BACKUP_PREFIX',
     'S3BACKUP_RETENTION_DAYS',
   );
 
@@ -131,12 +130,6 @@ print '</tr>';
 print '<tr class="oddeven">';
 print '<td>'.$langs->trans("S3BackupBucket").'</td>';
 print '<td><input type="text" name="S3BACKUP_BUCKET" class="minwidth300" value="'.htmlspecialchars(getDolGlobalString('S3BACKUP_BUCKET')).'"></td>';
-print '</tr>';
-
-// Prefix
-print '<tr class="oddeven">';
-print '<td>'.$langs->trans("S3BackupPrefix").'</td>';
-print '<td><input type="text" name="S3BACKUP_PREFIX" class="minwidth300" value="'.htmlspecialchars(getDolGlobalString('S3BACKUP_PREFIX', 'dolibarr-backup')).'"></td>';
 print '</tr>';
 
 print '<tr class="liste_titre">';
