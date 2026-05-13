@@ -378,11 +378,11 @@ class S3Backup
       return $f['date'] < $dailyCutoff;
     }));
 
-    // Keep the most recent folder per calendar month
+    // Keep the first (oldest) folder per calendar month
     $byMonth = array();
     foreach ($old as $f) {
       $month = date('Y-m', $f['date']);
-      if (!isset($byMonth[$month]) || $f['date'] > $byMonth[$month]['date']) {
+      if (!isset($byMonth[$month]) || $f['date'] < $byMonth[$month]['date']) {
         $byMonth[$month] = $f;
       }
     }
