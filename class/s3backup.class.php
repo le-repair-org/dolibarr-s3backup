@@ -171,12 +171,12 @@ class S3Backup
     $pass = str_replace(array('"', '`', '$'), array('\"', '\`', '\$'), (string) $dolibarr_main_db_pass);
 
     $args  = '--single-transaction';
-    $args .= ' --add-drop-table=TRUE';
+    $args .= ' --skip-lock-tables';
+    $args .= ' --add-drop-table';
     $args .= ' -K';
     $args .= ' --hex-blob';
     $args .= ' -c -e';
     $args .= ' --no-tablespaces';
-    $args .= ' --set-gtid-purged=OFF';
     $args .= ' -h '.escapeshellarg((string) $dolibarr_main_db_host);
     $args .= ' -u '.escapeshellarg((string) $dolibarr_main_db_user);
     if (!empty($dolibarr_main_db_port)) {
@@ -189,12 +189,12 @@ class S3Backup
     }
     $args .= ' '.escapeshellarg((string) $dolibarr_main_db_name);
 
-    $cmd = escapeshellarg($cmddump).' '.$args.' 2>/dev/null | bzip2 > '.escapeshellarg($outputFile);
+    $cmd = 'bash -c '.escapeshellarg('set -o pipefail; '.escapeshellarg($cmddump).' '.$args.' 2>/dev/null | bzip2 > '.escapeshellarg($outputFile));
 
     exec($cmd, $cmdOutput, $retval);
 
-    if (!file_exists($outputFile) || filesize($outputFile) === 0) {
-      throw new Exception('mysqldump produced an empty or missing output file (exit code: '.$retval.')');
+    if ($retval !== 0 || !file_exists($outputFile) || filesize($outputFile) < 1024) {
+      throw new Exception('mysqldump failed or produced an unexpectedly small output file (exit code: '.$retval.', size: '.(file_exists($outputFile) ? filesize($outputFile) : 'missing').' bytes)');
     }
 
     return $outputFile;
@@ -213,16 +213,27 @@ class S3Backup
 
     dol_mkdir($outputDir);
 
+    $stderrFile = $outputDir.'/'.$timestamp.'_docs.stderr';
+
     // Exclude the backup directory itself to avoid recursive inclusion
-    $excludeRel = 'admin/backup';
     $cmd = 'tar -czf '.escapeshellarg($outputFile)
-      .' --exclude='.escapeshellarg($excludeRel)
-      .' -C '.escapeshellarg(DOL_DATA_ROOT).' . 2>/dev/null';
+      .' --exclude='.escapeshellarg('./admin/backup')
+      .' -C '.escapeshellarg(DOL_DATA_ROOT).' . 2>'.escapeshellarg($stderrFile);
 
     exec($cmd, $cmdOutput, $retval);
 
-    if ($retval !== 0 || !file_exists($outputFile) || filesize($outputFile) === 0) {
-      throw new Exception('tar failed with exit code '.$retval);
+    $stderr = file_exists($stderrFile) ? trim((string) file_get_contents($stderrFile)) : '';
+    if (file_exists($stderrFile)) {
+      unlink($stderrFile);
+    }
+    if ($stderr !== '') {
+      dol_syslog(__METHOD__.' - tar stderr: '.$stderr, LOG_WARNING);
+    }
+
+    // GNU tar exits 1 for non-fatal warnings (e.g. files changed during archiving),
+    // and 2 for fatal errors. Exit 1 is acceptable on a live filesystem.
+    if ($retval > 1 || !file_exists($outputFile) || filesize($outputFile) === 0) {
+      throw new Exception('tar failed with exit code '.$retval.($stderr ? ': '.$stderr : ''));
     }
 
     return $outputFile;
