@@ -11,3 +11,6 @@ S3BackupSecretKeyPlaceholder = (inchange)
 S3BackupTestConnection = Tester la connexion
 S3BackupConnectionSuccess = Connexion au bucket S3 reussie
 S3BackupConnectionError = Echec de la connexion au bucket S3
+S3BackupRetention = Retention
+S3BackupRetentionDays = Retention quotidienne (jours)
+S3BackupRetentionHelp = Les backups plus anciens sont conserves a raison d'un par mois calendaire.

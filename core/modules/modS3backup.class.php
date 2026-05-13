@@ -33,7 +33,7 @@ class modS3backup extends DolibarrModules
 
     $this->numero = 500020;
     $this->rights_class = 's3backup';
-    $this->family = "technic";
+    $this->family = "other";
     $this->module_position = '90';
     $this->name = preg_replace('/^mod/i', '', get_class($this));
     $this->description = "S3 backup module for Dolibarr (database + files)";
@@ -58,12 +58,13 @@ class modS3backup extends DolibarrModules
 
     // S3 connection settings
     $this->const = array(
-      1 => array('S3BACKUP_ENDPOINT',   'chaine', '', 'S3-compatible endpoint URL (e.g. https://s3.gra.io.cloud.ovh.net)', 0, 'current', 1),
-      2 => array('S3BACKUP_REGION',     'chaine', '', 'S3 region (e.g. gra)', 0, 'current', 1),
-      3 => array('S3BACKUP_BUCKET',     'chaine', '', 'S3 bucket name', 0, 'current', 1),
-      4 => array('S3BACKUP_ACCESS_KEY', 'chaine', '', 'S3 access key', 0, 'current', 1),
-      5 => array('S3BACKUP_SECRET_KEY', 'chaine', '', 'S3 secret key', 0, 'current', 1),
-      6 => array('S3BACKUP_PREFIX',     'chaine', 'dolibarr-backup', 'Key prefix (folder) inside the bucket', 0, 'current', 1),
+      1 => array('S3BACKUP_ENDPOINT',      'chaine', '',                'S3-compatible endpoint URL (e.g. https://s3.gra.io.cloud.ovh.net)', 0, 'current', 1),
+      2 => array('S3BACKUP_REGION',        'chaine', '',                'S3 region (e.g. gra)', 0, 'current', 1),
+      3 => array('S3BACKUP_BUCKET',        'chaine', '',                'S3 bucket name', 0, 'current', 1),
+      4 => array('S3BACKUP_ACCESS_KEY',    'chaine', '',                'S3 access key', 0, 'current', 1),
+      5 => array('S3BACKUP_SECRET_KEY',    'chaine', '',                'S3 secret key', 0, 'current', 1),
+      6 => array('S3BACKUP_PREFIX',        'chaine', 'dolibarr-backup', 'Key prefix (folder) inside the bucket', 0, 'current', 1),
+      7 => array('S3BACKUP_RETENTION_DAYS','chaine', '30',              'Days to keep all daily backups; older ones are kept at one per calendar month', 0, 'current', 1),
     );
 
     $this->cronjobs = array(

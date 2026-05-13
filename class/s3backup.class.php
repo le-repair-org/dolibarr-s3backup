@@ -15,7 +15,6 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-require_once DOL_DOCUMENT_ROOT.'/core/class/utils.class.php';
 require_once DOL_DOCUMENT_ROOT.'/core/lib/files.lib.php';
 require_once DOL_DOCUMENT_ROOT.'/custom/s3backup/vendor/autoload.php';
 
@@ -62,25 +61,13 @@ class S3Backup
     try {
       $s3 = $this->buildS3Client();
 
-      $utils = new Utils($this->db);
-
-      // Generate the dump into DOL_DATA_ROOT/admin/backup/
-      $result = $utils->dumpDatabase('gz', 'auto', 1, 'auto', 0, 0, 0);
-      if ($result < 0) {
-        $this->error = 'dumpDatabase failed: '.$utils->error;
-        return 1;
-      }
-
-      $localFile = $this->findLatestBackupFile('admin/backup', '.sql.gz');
-      if (!$localFile) {
-        $this->error = 'Could not find the generated database dump file';
-        return 1;
-      }
+      $localFile = $this->dumpDatabaseToFile();
 
       $key = $this->buildKey('db', basename($localFile));
       $this->uploadToS3($s3, $localFile, $key);
 
-      $this->output = 'Database backup uploaded: '.$key;
+      $deleted = $this->pruneOldBackups($s3, 'db');
+      $this->output = 'Database backup uploaded: '.$key.' | Pruned: '.$deleted.' old backup(s)';
     } catch (AwsException $e) {
       $error++;
       $this->error = 'S3 upload failed: '.$e->getAwsErrorMessage();
@@ -131,7 +118,8 @@ class S3Backup
       $key = $this->buildKey('files', $filename);
       $this->uploadToS3($s3, $localFile, $key);
 
-      $this->output = 'Files backup uploaded: '.$key;
+      $deleted = $this->pruneOldBackups($s3, 'files');
+      $this->output = 'Files backup uploaded: '.$key.' | Pruned: '.$deleted.' old backup(s)';
     } catch (AwsException $e) {
       $error++;
       $this->error = 'S3 upload failed: '.$e->getAwsErrorMessage();
@@ -212,6 +200,127 @@ class S3Backup
   private function getBucket()
   {
     return getDolGlobalString('S3BACKUP_BUCKET');
+  }
+
+  /**
+   * Run mysqldump and compress the output to a .sql.gz file in DOL_DATA_ROOT/admin/backup/.
+   *
+   * Uses --set-gtid-purged=OFF and redirects stderr to /dev/null so that non-fatal
+   * warnings (e.g. GTID notices) do not corrupt the dump file or trigger false errors.
+   *
+   * @return string Absolute path to the generated .sql.gz file
+   * @throws Exception on configuration or execution failure
+   */
+  private function dumpDatabaseToFile()
+  {
+    global $db, $conf;
+    global $dolibarr_main_db_name, $dolibarr_main_db_host, $dolibarr_main_db_user,
+           $dolibarr_main_db_port, $dolibarr_main_db_pass, $dolibarr_main_db_character_set;
+
+    $cmddump = getDolGlobalString('SYSTEMTOOLS_MYSQLDUMP') ?: $db->getPathOfDump();
+    if (!$cmddump) {
+      throw new Exception('mysqldump binary not found. Set SYSTEMTOOLS_MYSQLDUMP in Dolibarr admin.');
+    }
+    $cmddump = preg_replace('/[\$%]/', '', $cmddump);
+
+    $timestamp = dol_print_date(dol_now(), '%Y-%m-%d_%H-%M-%S', 'gmt');
+    $filename  = 'mysqldump_'.$dolibarr_main_db_name.'_'.$timestamp.'.sql.gz';
+    $outputDir = DOL_DATA_ROOT.'/admin/backup';
+    $outputFile = $outputDir.'/'.$filename;
+
+    dol_mkdir($outputDir);
+
+    $pass = str_replace(array('"', '`', '$'), array('\"', '\`', '\$'), (string) $dolibarr_main_db_pass);
+
+    $args  = '--single-transaction';
+    $args .= ' --add-drop-table=TRUE';
+    $args .= ' -K';
+    $args .= ' --hex-blob';
+    $args .= ' -c -e';
+    $args .= ' --no-tablespaces';
+    $args .= ' --set-gtid-purged=OFF';
+    $args .= ' -h '.escapeshellarg((string) $dolibarr_main_db_host);
+    $args .= ' -u '.escapeshellarg((string) $dolibarr_main_db_user);
+    if (!empty($dolibarr_main_db_port)) {
+      $args .= ' -P '.(int) $dolibarr_main_db_port.' --protocol=tcp';
+    }
+    $charset = ($dolibarr_main_db_character_set === 'utf8mb4') ? 'utf8mb4' : 'utf8';
+    $args .= ' --default-character-set='.escapeshellarg($charset);
+    if (!empty($dolibarr_main_db_pass)) {
+      $args .= ' -p"'.$pass.'"';
+    }
+    $args .= ' '.escapeshellarg((string) $dolibarr_main_db_name);
+
+    // Redirect stderr to /dev/null so non-fatal warnings do not pollute the dump
+    $cmd = escapeshellarg($cmddump).' '.$args.' 2>/dev/null | gzip > '.escapeshellarg($outputFile);
+
+    exec($cmd, $cmdOutput, $retval);
+
+    if (!file_exists($outputFile) || filesize($outputFile) === 0) {
+      throw new Exception('mysqldump produced an empty or missing output file (exit code: '.$retval.')');
+    }
+
+    return $outputFile;
+  }
+
+  /**
+   * Prune S3 objects for a given backup type using a two-tier retention policy:
+   * - Objects within the retention window (RETENTION_DAYS): kept as-is
+   * - Older objects: only the most recent backup per calendar month is kept
+   *
+   * @return int Number of deleted objects
+   */
+  private function pruneOldBackups(S3Client $s3, $type)
+  {
+    $prefix      = rtrim(getDolGlobalString('S3BACKUP_PREFIX', 'dolibarr-backup'), '/') . '/' . $type . '/';
+    $retDays     = max(1, (int) getDolGlobalString('S3BACKUP_RETENTION_DAYS', 30));
+    $dailyCutoff = dol_now() - $retDays * 86400;
+
+    $objects = array();
+    $paginator = $s3->getPaginator('ListObjectsV2', array(
+      'Bucket' => $this->getBucket(),
+      'Prefix' => $prefix,
+    ));
+    foreach ($paginator as $page) {
+      foreach (($page['Contents'] ?? array()) as $obj) {
+        $fileDate = strtotime(substr(basename($obj['Key']), 0, 10));
+        if ($fileDate === false) {
+          continue;
+        }
+        $objects[] = array('Key' => $obj['Key'], 'date' => $fileDate);
+      }
+    }
+
+    // Split into recent (keep all) and old (apply monthly retention)
+    $old = array_filter($objects, function ($o) use ($dailyCutoff) {
+      return $o['date'] < $dailyCutoff;
+    });
+
+    // For old objects keep the most recent backup of each calendar month
+    $byMonth = array();
+    foreach ($old as $o) {
+      $month = date('Y-m', $o['date']);
+      if (!isset($byMonth[$month]) || $o['date'] > $byMonth[$month]['date']) {
+        $byMonth[$month] = $o;
+      }
+    }
+    $keepKeys = array_column($byMonth, 'Key');
+
+    $toDelete = array();
+    foreach ($old as $o) {
+      if (!in_array($o['Key'], $keepKeys, true)) {
+        $toDelete[] = array('Key' => $o['Key']);
+      }
+    }
+
+    foreach (array_chunk($toDelete, 1000) as $batch) {
+      $s3->deleteObjects(array(
+        'Bucket' => $this->getBucket(),
+        'Delete' => array('Objects' => $batch),
+      ));
+    }
+
+    return count($toDelete);
   }
 
   /**

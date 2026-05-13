@@ -68,6 +68,7 @@ if ($action === 'save') {
     'S3BACKUP_BUCKET',
     'S3BACKUP_ACCESS_KEY',
     'S3BACKUP_PREFIX',
+    'S3BACKUP_RETENTION_DAYS',
   );
 
   foreach ($fields as $field) {
@@ -154,6 +155,19 @@ print '<tr class="oddeven">';
 print '<td>'.$langs->trans("S3BackupSecretKey").'</td>';
 print '<td>';
 print '<input type="password" name="S3BACKUP_SECRET_KEY" class="minwidth400" value="" autocomplete="new-password" placeholder="'.($hasSecret ? $langs->trans("S3BackupSecretKeyPlaceholder") : '').'">';
+print '</td>';
+print '</tr>';
+
+print '<tr class="liste_titre">';
+print '<td colspan="2">'.$langs->trans("S3BackupRetention").'</td>';
+print '</tr>';
+
+// Retention days
+print '<tr class="oddeven">';
+print '<td>'.$langs->trans("S3BackupRetentionDays").'</td>';
+print '<td>';
+print '<input type="number" name="S3BACKUP_RETENTION_DAYS" min="1" class="minwidth100" value="'.htmlspecialchars(getDolGlobalString('S3BACKUP_RETENTION_DAYS', '30')).'">';
+print ' <span class="opacitymedium">'.$langs->trans("S3BackupRetentionHelp").'</span>';
 print '</td>';
 print '</tr>';
 
