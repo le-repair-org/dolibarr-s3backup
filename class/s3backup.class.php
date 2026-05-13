@@ -290,59 +290,33 @@ class S3Backup
   }
 
   /**
-   * List all timestamp folders in the bucket (under the configured prefix),
-   * apply two-tier retention, and delete expired folders.
+   * Return the retention plan without deleting anything.
+   *
+   * Each entry has keys: 'key', 'name', 'date'.
+   * 'monthly' entries also have a 'month' key (e.g. '2026-03').
+   *
+   * @return array{recent: array, monthly: array, delete: array}
+   * @throws AwsException|Exception
+   */
+  public function getPrunePlan()
+  {
+    $s3 = $this->buildS3Client();
+    return $this->buildPrunePlan($s3);
+  }
+
+  /**
+   * List all timestamp folders in the bucket, apply two-tier retention,
+   * and delete expired folders.
    *
    * @return int Number of deleted folders
    */
   private function pruneOldBackupFolders(S3Client $s3)
   {
-    $bucket      = $this->getBucket();
-    $retDays     = max(1, (int) getDolGlobalString('S3BACKUP_RETENTION_DAYS', 30));
-    $dailyCutoff = time() - $retDays * 86400;
-
-    // Collect all top-level timestamp folders
-    $folders = array();
-    $paginator = $s3->getPaginator('ListObjectsV2', array(
-      'Bucket'    => $bucket,
-      'Delimiter' => '/',
-    ));
-    foreach ($paginator as $page) {
-      foreach (($page['CommonPrefixes'] ?? array()) as $cp) {
-        // e.g. "dolibarr-backup/20251130_16_46_45/" or "20251130_16_46_45/"
-        $folderKey  = $cp['Prefix'];
-        $folderName = basename(rtrim($folderKey, '/'));
-        // Parse YYYYMMDD from the start of the folder name
-        $fileDate = DateTime::createFromFormat('Ymd', substr($folderName, 0, 8));
-        if (!$fileDate) {
-          continue;
-        }
-        $folders[] = array('key' => $folderKey, 'name' => $folderName, 'date' => $fileDate->getTimestamp());
-      }
-    }
-
-    // Split recent (keep all) vs old (apply monthly retention)
-    $old = array_filter($folders, function ($f) use ($dailyCutoff) {
-      return $f['date'] < $dailyCutoff;
-    });
-
-    // Keep the most recent folder per calendar month
-    $byMonth = array();
-    foreach ($old as $f) {
-      $month = date('Y-m', $f['date']);
-      if (!isset($byMonth[$month]) || $f['date'] > $byMonth[$month]['date']) {
-        $byMonth[$month] = $f;
-      }
-    }
-    $keepKeys = array_column($byMonth, 'key');
+    $bucket = $this->getBucket();
+    $plan   = $this->buildPrunePlan($s3);
 
     $deletedFolders = 0;
-    foreach ($old as $f) {
-      if (in_array($f['key'], $keepKeys, true)) {
-        continue;
-      }
-
-      // List all objects inside this folder and delete them
+    foreach ($plan['delete'] as $f) {
       $objects = array();
       $objPaginator = $s3->getPaginator('ListObjectsV2', array(
         'Bucket' => $bucket,
@@ -365,5 +339,69 @@ class S3Backup
     }
 
     return $deletedFolders;
+  }
+
+  /**
+   * Compute which folders to keep and which to delete according to the
+   * two-tier retention policy, without performing any deletion.
+   *
+   * @return array{recent: array, monthly: array, delete: array}
+   */
+  private function buildPrunePlan(S3Client $s3)
+  {
+    $bucket      = $this->getBucket();
+    $retDays     = max(1, (int) getDolGlobalString('S3BACKUP_RETENTION_DAYS', 30));
+    $dailyCutoff = time() - $retDays * 86400;
+
+    $folders = array();
+    $paginator = $s3->getPaginator('ListObjectsV2', array(
+      'Bucket'    => $bucket,
+      'Delimiter' => '/',
+    ));
+    foreach ($paginator as $page) {
+      foreach (($page['CommonPrefixes'] ?? array()) as $cp) {
+        $folderKey  = $cp['Prefix'];
+        $folderName = basename(rtrim($folderKey, '/'));
+        $fileDate   = DateTime::createFromFormat('Ymd', substr($folderName, 0, 8));
+        if (!$fileDate) {
+          continue;
+        }
+        $folders[] = array('key' => $folderKey, 'name' => $folderName, 'date' => $fileDate->getTimestamp());
+      }
+    }
+
+    $recent = array_values(array_filter($folders, function ($f) use ($dailyCutoff) {
+      return $f['date'] >= $dailyCutoff;
+    }));
+
+    $old = array_values(array_filter($folders, function ($f) use ($dailyCutoff) {
+      return $f['date'] < $dailyCutoff;
+    }));
+
+    // Keep the most recent folder per calendar month
+    $byMonth = array();
+    foreach ($old as $f) {
+      $month = date('Y-m', $f['date']);
+      if (!isset($byMonth[$month]) || $f['date'] > $byMonth[$month]['date']) {
+        $byMonth[$month] = $f;
+      }
+    }
+
+    $monthly  = array();
+    $toDelete = array();
+    $keepKeys = array_column($byMonth, 'key');
+    foreach ($old as $f) {
+      if (in_array($f['key'], $keepKeys, true)) {
+        $monthly[] = $f + array('month' => date('Y-m', $f['date']));
+      } else {
+        $toDelete[] = $f;
+      }
+    }
+
+    usort($recent,   fn($a, $b) => $b['date'] - $a['date']);
+    usort($monthly,  fn($a, $b) => $b['date'] - $a['date']);
+    usort($toDelete, fn($a, $b) => $b['date'] - $a['date']);
+
+    return array('recent' => $recent, 'monthly' => $monthly, 'delete' => $toDelete);
   }
 }

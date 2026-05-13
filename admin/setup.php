@@ -51,7 +51,8 @@ require_once DOL_DOCUMENT_ROOT."/custom/s3backup/class/s3backup.class.php";
 
 $langs->loadLangs(array("admin", "s3backup@s3backup"));
 
-$action = GETPOST('action', 'aZ09');
+$action    = GETPOST('action', 'aZ09');
+$prunePlan = null;
 
 if (!$user->admin) {
   accessforbidden();
@@ -87,6 +88,13 @@ if ($action === 'save') {
     $backup = new S3Backup($db);
     $backup->testConnection();
     setEventMessages($langs->trans("S3BackupConnectionSuccess"), null, 'mesgs');
+  } catch (Exception $e) {
+    setEventMessages($langs->trans("S3BackupConnectionError").': '.$e->getMessage(), null, 'errors');
+  }
+} elseif ($action === 'dryrunprune') {
+  try {
+    $backup    = new S3Backup($db);
+    $prunePlan = $backup->getPrunePlan();
   } catch (Exception $e) {
     setEventMessages($langs->trans("S3BackupConnectionError").': '.$e->getMessage(), null, 'errors');
   }
@@ -180,6 +188,55 @@ print '<div class="tabsAction">';
 print '<input type="submit" class="butActionDelete" value="'.$langs->trans("S3BackupTestConnection").'">';
 print '</div>';
 print '</form>';
+
+// Dry-run prune form + results
+print '<form method="POST" action="'.$_SERVER["PHP_SELF"].'">';
+print '<input type="hidden" name="token" value="'.newToken().'">';
+print '<input type="hidden" name="action" value="dryrunprune">';
+print '<div class="tabsAction">';
+print '<input type="submit" class="butAction" value="'.$langs->trans("S3BackupDryRunPrune").'">';
+print '</div>';
+print '</form>';
+
+if ($prunePlan !== null) {
+  print '<table class="noborder centpercent">';
+  print '<tr class="liste_titre">';
+  print '<td>'.$langs->trans("Date").'</td>';
+  print '<td>'.$langs->trans("S3BackupPruneStatus").'</td>';
+  print '</tr>';
+
+  foreach ($prunePlan['recent'] as $f) {
+    $dt = DateTime::createFromFormat('Ymd_H_i_s', $f['name']);
+    print '<tr class="oddeven">';
+    print '<td>'.($dt ? dol_print_date($dt->getTimestamp(), 'dayhour') : dol_escape_htmltag($f['name'])).'</td>';
+    print '<td><span class="badge badge-status4 badge-status">'.$langs->trans("S3BackupPruneKeepRecent").'</span></td>';
+    print '</tr>';
+  }
+
+  foreach ($prunePlan['monthly'] as $f) {
+    $dt = DateTime::createFromFormat('Ymd_H_i_s', $f['name']);
+    print '<tr class="oddeven">';
+    print '<td>'.($dt ? dol_print_date($dt->getTimestamp(), 'dayhour') : dol_escape_htmltag($f['name'])).'</td>';
+    print '<td><span class="badge badge-status1 badge-status">'.$langs->trans("S3BackupPruneKeepMonthly", $f['month']).'</span></td>';
+    print '</tr>';
+  }
+
+  foreach ($prunePlan['delete'] as $f) {
+    $dt = DateTime::createFromFormat('Ymd_H_i_s', $f['name']);
+    print '<tr class="oddeven">';
+    print '<td>'.($dt ? dol_print_date($dt->getTimestamp(), 'dayhour') : dol_escape_htmltag($f['name'])).'</td>';
+    print '<td><span class="badge badge-status8 badge-status">'.$langs->trans("S3BackupPruneDelete").'</span></td>';
+    print '</tr>';
+  }
+
+  print '</table>';
+
+  $totalKeep   = count($prunePlan['recent']) + count($prunePlan['monthly']);
+  $totalDelete = count($prunePlan['delete']);
+  print '<div class="opacitymedium" style="padding:8px 0;">';
+  print $langs->trans("S3BackupPruneSummary", $totalKeep, $totalDelete);
+  print '</div>';
+}
 
 print dol_get_fiche_end();
 
