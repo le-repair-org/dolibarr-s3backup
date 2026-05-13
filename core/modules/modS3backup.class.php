@@ -100,5 +100,13 @@ class modS3backup extends DolibarrModules
     $this->rights = array();
     $this->tabs = array();
     $this->menu = array();
+
+    $this->boxes = array(
+      0 => array(
+        'file'               => 'box_s3backup.php@s3backup',
+        'note'               => 'Last S3 backups with size',
+        'enabledbydefaulton' => 'Home',
+      ),
+    );
   }
 }
