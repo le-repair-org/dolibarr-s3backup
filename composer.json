@@ -1,0 +1,16 @@
+{
+  "name": "le-repair/s3backup",
+  "description": "Dolibarr S3 backup module",
+  "type": "dolibarr-module",
+  "require": {
+    "php": ">=8.2",
+    "aws/aws-sdk-php": "^3.0"
+  },
+  "autoload": {
+    "classmap": ["class/"]
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "sort-packages": true
+  }
+}

@@ -1,0 +1,13 @@
+S3BackupSetup = Parametres sauvegarde S3
+S3BackupConnectionSettings = Connexion
+S3BackupCredentials = Identifiants
+S3BackupEndpoint = URL du endpoint
+S3BackupRegion = Region
+S3BackupBucket = Bucket
+S3BackupPrefix = Prefixe de cle
+S3BackupAccessKey = Cle d'acces
+S3BackupSecretKey = Cle secrete
+S3BackupSecretKeyPlaceholder = (inchange)
+S3BackupTestConnection = Tester la connexion
+S3BackupConnectionSuccess = Connexion au bucket S3 reussie
+S3BackupConnectionError = Echec de la connexion au bucket S3

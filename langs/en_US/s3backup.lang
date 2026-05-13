@@ -1,0 +1,13 @@
+S3BackupSetup = S3 Backup Settings
+S3BackupConnectionSettings = Connection
+S3BackupCredentials = Credentials
+S3BackupEndpoint = Endpoint URL
+S3BackupRegion = Region
+S3BackupBucket = Bucket
+S3BackupPrefix = Key prefix
+S3BackupAccessKey = Access key
+S3BackupSecretKey = Secret key
+S3BackupSecretKeyPlaceholder = (unchanged)
+S3BackupTestConnection = Test connection
+S3BackupConnectionSuccess = Connection to S3 bucket successful
+S3BackupConnectionError = Connection to S3 bucket failed
