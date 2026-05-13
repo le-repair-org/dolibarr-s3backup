@@ -142,11 +142,11 @@ class box_s3backup extends ModeleBoxes
         );
         $this->info_box_contents[$line][1] = array(
           'td'   => 'class="right"',
-          'text' => $dbSize > 0 ? dol_print_size($dbSize, 1, 1) : '-',
+          'text' => $dbSize > 0 ? self::formatSize($dbSize) : '-',
         );
         $this->info_box_contents[$line][2] = array(
           'td'   => 'class="right"',
-          'text' => $docsSize > 0 ? dol_print_size($docsSize, 1, 1) : '-',
+          'text' => $docsSize > 0 ? self::formatSize($docsSize) : '-',
         );
 
         $line++;
@@ -176,5 +176,25 @@ class box_s3backup extends ModeleBoxes
   public function showBox($head = null, $contents = null, $nooutput = 0)
   {
     return parent::showBox($this->info_box_head, $this->info_box_contents, $nooutput);
+  }
+
+  /**
+   * Format a byte count as a human-readable string (Ko / Mo / Go).
+   *
+   * @param int $bytes
+   * @return string
+   */
+  private static function formatSize($bytes)
+  {
+    if ($bytes >= 1000 * 1000 * 1000) {
+      return number_format($bytes / (1000 * 1000 * 1000), 2).' Go';
+    }
+    if ($bytes >= 1000 * 1000) {
+      return number_format($bytes / (1000 * 1000), 2).' Mo';
+    }
+    if ($bytes >= 1000) {
+      return number_format($bytes / 1000, 2).' Ko';
+    }
+    return $bytes.' o';
   }
 }
