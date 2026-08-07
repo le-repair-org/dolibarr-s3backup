@@ -216,12 +216,24 @@ class S3Backup
     }
     $args .= ' '.escapeshellarg((string) $dolibarr_main_db_name);
 
-    $cmd = 'bash -c '.escapeshellarg('set -o pipefail; '.escapeshellarg($cmddump).' '.$args.' 2>/dev/null | bzip2 > '.escapeshellarg($outputFile));
+    $stderrFile = $outputDir.'/'.$timestamp.'_db.stderr';
+
+    $cmd = 'bash -c '.escapeshellarg('set -o pipefail; '.escapeshellarg($cmddump).' '.$args.' 2>'.escapeshellarg($stderrFile).' | bzip2 > '.escapeshellarg($outputFile));
 
     exec($cmd, $cmdOutput, $retval);
 
+    $stderr = file_exists($stderrFile) ? trim((string) file_get_contents($stderrFile)) : '';
+    if (file_exists($stderrFile)) {
+      unlink($stderrFile);
+    }
+    // mysqldump always emits this one when -p is used; it carries no diagnostic value
+    $stderr = trim(str_replace('mysqldump: [Warning] Using a password on the command line interface can be insecure.', '', $stderr));
+    if ($stderr !== '') {
+      dol_syslog(__METHOD__.' - mysqldump stderr: '.$stderr, LOG_WARNING);
+    }
+
     if ($retval !== 0 || !file_exists($outputFile) || filesize($outputFile) < 1024) {
-      throw new Exception('mysqldump failed or produced an unexpectedly small output file (exit code: '.$retval.', size: '.(file_exists($outputFile) ? filesize($outputFile) : 'missing').' bytes)');
+      throw new Exception('mysqldump failed or produced an unexpectedly small output file (exit code: '.$retval.', size: '.(file_exists($outputFile) ? filesize($outputFile) : 'missing').' bytes)'.($stderr ? ': '.$stderr : ''));
     }
 
     return $outputFile;
