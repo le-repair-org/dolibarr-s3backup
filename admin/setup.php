@@ -69,6 +69,8 @@ if ($action === 'save') {
     'S3BACKUP_BUCKET',
     'S3BACKUP_ACCESS_KEY',
     'S3BACKUP_RETENTION_DAYS',
+    'S3BACKUP_HEARTBEAT_BACKUP_URL',
+    'S3BACKUP_HEARTBEAT_PRUNE_URL',
   );
 
   foreach ($fields as $field) {
@@ -170,6 +172,26 @@ print '<td>';
 print '<input type="number" name="S3BACKUP_RETENTION_DAYS" min="1" class="minwidth100" value="'.htmlspecialchars(getDolGlobalString('S3BACKUP_RETENTION_DAYS', '30')).'">';
 print ' <span class="opacitymedium">'.$langs->trans("S3BackupRetentionHelp").'</span>';
 print '</td>';
+print '</tr>';
+
+print '<tr class="liste_titre">';
+print '<td colspan="2">'.$langs->trans("S3BackupHeartbeats").'</td>';
+print '</tr>';
+
+print '<tr class="oddeven">';
+print '<td colspan="2" class="opacitymedium">'.$langs->trans("S3BackupHeartbeatHelp").'</td>';
+print '</tr>';
+
+// Backup heartbeat URL
+print '<tr class="oddeven">';
+print '<td>'.$langs->trans("S3BackupHeartbeatBackupUrl").'</td>';
+print '<td><input type="text" name="S3BACKUP_HEARTBEAT_BACKUP_URL" class="minwidth500" value="'.htmlspecialchars(getDolGlobalString('S3BACKUP_HEARTBEAT_BACKUP_URL')).'" placeholder="https://hc-ping.com/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></td>';
+print '</tr>';
+
+// Prune heartbeat URL
+print '<tr class="oddeven">';
+print '<td>'.$langs->trans("S3BackupHeartbeatPruneUrl").'</td>';
+print '<td><input type="text" name="S3BACKUP_HEARTBEAT_PRUNE_URL" class="minwidth500" value="'.htmlspecialchars(getDolGlobalString('S3BACKUP_HEARTBEAT_PRUNE_URL')).'" placeholder="https://hc-ping.com/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></td>';
 print '</tr>';
 
 print '</table>';

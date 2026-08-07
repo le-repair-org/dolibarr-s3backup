@@ -64,6 +64,8 @@ class modS3backup extends DolibarrModules
       4 => array('S3BACKUP_ACCESS_KEY',    'chaine', '',                'S3 access key', 0, 'current', 1),
       5 => array('S3BACKUP_SECRET_KEY',    'chaine', '',                'S3 secret key', 0, 'current', 1),
       6 => array('S3BACKUP_RETENTION_DAYS','chaine', '30', 'Days to keep all daily backups; older ones are kept at one per calendar month', 0, 'current', 1),
+      7 => array('S3BACKUP_HEARTBEAT_BACKUP_URL', 'chaine', '', 'Optional healthchecks.io ping URL for the backup job', 0, 'current', 1),
+      8 => array('S3BACKUP_HEARTBEAT_PRUNE_URL',  'chaine', '', 'Optional healthchecks.io ping URL for the prune job', 0, 'current', 1),
     );
 
     $this->cronjobs = array(

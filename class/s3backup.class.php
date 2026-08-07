@@ -16,6 +16,7 @@
  */
 
 require_once DOL_DOCUMENT_ROOT.'/core/lib/files.lib.php';
+require_once DOL_DOCUMENT_ROOT.'/core/lib/geturl.lib.php';
 require_once DOL_DOCUMENT_ROOT.'/custom/s3backup/vendor/autoload.php';
 
 use Aws\S3\S3Client;
@@ -38,6 +39,9 @@ class S3Backup
 
   /** @var string Error message for cron log */
   public $error = '';
+
+  /** @var string[] Additional error messages; read by the cron runner alongside $error */
+  public $errors = array();
 
   /**
    * @param DoliDB $db Database handler
@@ -64,6 +68,7 @@ class S3Backup
     $error    = 0;
     $dbFile   = null;
     $docsFile = null;
+    $details  = '';
 
     try {
       $s3        = $this->buildS3Client();
@@ -74,6 +79,10 @@ class S3Backup
 
       $this->uploadToS3($s3, $dbFile,   $this->buildKey($timestamp, 'db.bz2'));
       $this->uploadToS3($s3, $docsFile, $this->buildKey($timestamp, 'docs.tar.gz'));
+
+      // Read sizes before the finally block deletes the temp files
+      $details  = $this->buildKey($timestamp, 'db.bz2').' — '.$this->formatBytes(filesize($dbFile))."\n";
+      $details .= $this->buildKey($timestamp, 'docs.tar.gz').' — '.$this->formatBytes(filesize($docsFile));
 
       $this->output = 'Backup uploaded: '.$timestamp.'/db.bz2 + docs.tar.gz';
     } catch (AwsException $e) {
@@ -93,6 +102,12 @@ class S3Backup
       }
     }
 
+    $this->pingHeartbeat(
+      'S3BACKUP_HEARTBEAT_BACKUP_URL',
+      $error ? '/fail' : '',
+      $error ? $this->error : $details
+    );
+
     return $error;
   }
 
@@ -108,21 +123,33 @@ class S3Backup
   {
     dol_syslog(__METHOD__, LOG_DEBUG);
 
+    $error   = 0;
+    $details = '';
+
     try {
       $s3      = $this->buildS3Client();
       $deleted = $this->pruneOldBackupFolders($s3);
-      $this->output = 'Pruned: '.$deleted.' old backup folder(s)';
+      $this->output = 'Pruned: '.count($deleted).' old backup folder(s)';
+      $details = count($deleted)
+        ? 'Deleted '.count($deleted).' folder(s):'."\n".implode("\n", $deleted)
+        : 'Nothing to delete';
     } catch (AwsException $e) {
+      $error++;
       $this->error = 'S3 prune failed: '.$e->getAwsErrorMessage();
       dol_syslog(__METHOD__.' - '.$this->error, LOG_ERR);
-      return 1;
     } catch (Exception $e) {
+      $error++;
       $this->error = $e->getMessage();
       dol_syslog(__METHOD__.' - '.$this->error, LOG_ERR);
-      return 1;
     }
 
-    return 0;
+    $this->pingHeartbeat(
+      'S3BACKUP_HEARTBEAT_PRUNE_URL',
+      $error ? '/fail' : '',
+      $error ? $this->error : $details
+    );
+
+    return $error;
   }
 
   /**
@@ -308,14 +335,14 @@ class S3Backup
    * List all timestamp folders in the bucket, apply two-tier retention,
    * and delete expired folders.
    *
-   * @return int Number of deleted folders
+   * @return string[] Names of the deleted folders
    */
   private function pruneOldBackupFolders(S3Client $s3)
   {
     $bucket = $this->getBucket();
     $plan   = $this->buildPrunePlan($s3);
 
-    $deletedFolders = 0;
+    $deletedFolders = array();
     foreach ($plan['delete'] as $f) {
       $objects = array();
       $objPaginator = $s3->getPaginator('ListObjectsV2', array(
@@ -335,7 +362,7 @@ class S3Backup
         ));
       }
 
-      $deletedFolders++;
+      $deletedFolders[] = $f['name'];
     }
 
     return $deletedFolders;
@@ -403,5 +430,65 @@ class S3Backup
     usort($toDelete, fn($a, $b) => $b['date'] - $a['date']);
 
     return array('recent' => $recent, 'monthly' => $monthly, 'delete' => $toDelete);
+  }
+
+  // ------------------------------------------------------------------
+  // Private — monitoring
+  // ------------------------------------------------------------------
+
+  /**
+   * Ping a healthchecks.io endpoint. Never throws and never affects the cron
+   * return code: a monitoring outage must not turn a successful backup into a
+   * failed job.
+   *
+   * @param string $constName Constant holding the base ping URL ('' = feature disabled)
+   * @param string $suffix    '' on success, '/fail' on failure
+   * @param string $body      Detail logged alongside the ping on healthchecks.io
+   * @return void
+   */
+  private function pingHeartbeat($constName, $suffix = '', $body = '')
+  {
+    $url = trim(getDolGlobalString($constName));
+    if ($url === '') {
+      return;
+    }
+
+    $url = rtrim($url, '/').$suffix;
+
+    $res = getURLContent(
+      $url,
+      'POSTALREADYFORMATED',                            // raw body, sent as-is
+      $body,
+      0,                                                // do not follow redirects
+      array('Content-Type: text/plain; charset=UTF-8'),
+      array('http', 'https'),
+      0,                                                // external URL only
+      -1,
+      5,                                                // connect timeout
+      10                                                // response timeout
+    );
+
+    if (!empty($res['curl_error_no']) || $res['http_code'] < 200 || $res['http_code'] >= 300) {
+      dol_syslog(__METHOD__.' - heartbeat ping failed ('.$url.'): http '.$res['http_code'].' '.$res['curl_error_msg'], LOG_WARNING);
+    }
+  }
+
+  /**
+   * Human-readable file size (dol_print_size() caps at KB).
+   *
+   * @param int $bytes Size in bytes
+   * @return string
+   */
+  private function formatBytes($bytes)
+  {
+    $units = array('B', 'KB', 'MB', 'GB', 'TB');
+    $i     = 0;
+    $value = (float) $bytes;
+    while ($value >= 1024 && $i < count($units) - 1) {
+      $value /= 1024;
+      $i++;
+    }
+
+    return round($value, 1).' '.$units[$i];
   }
 }
